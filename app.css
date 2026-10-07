@@ -93,3 +93,21 @@ h1 { margin: 0; font-size: 30px; line-height: 36px; font-weight: 700; letter-spa
 .setrow { display: flex; flex-direction: column; gap: 10px; }
 .itembody .due { font-size: 13px; color: var(--muted); }
 .itembody .due.late { color: var(--danger); }
+
+.moneycard { gap: 8px; }
+.moneycard .big { font-size: 34px; line-height: 38px; font-weight: 700; letter-spacing: -0.02em; }
+.mrow { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.mname { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--ink2); }
+.mamt { font-weight: 600; font-variant-numeric: tabular-nums; }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; }
+.stat .n { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat .l { font-size: 12px; color: var(--muted); }
+.earnrow { width: 100%; min-height: 54px; background: none; border: 0; border-bottom: 1px solid var(--line); padding: 8px 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; }
+.earnrow:last-child { border-bottom: 0; }
+.earnrow .el { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.earnrow .t { font-size: 15px; font-weight: 600; }
+.earnrow .b { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.earnrow .ea { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.earnrow .ea.up { color: var(--muted); font-weight: 600; }
+.calc { font-size: 15px; font-weight: 600; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }

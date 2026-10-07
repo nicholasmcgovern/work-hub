@@ -6,7 +6,7 @@
   var COLORS = ['#1F5FD1', '#B4530A', '#0B6B62', '#6D3FC4', '#B3261E', '#3E4756'];
   var SAFE_URL = /^(https?:|sms:|tel:|mailto:|message:)/i;
 
-  var S = { session: null, jobs: [], items: [], loaded: false, authMode: 'in', msg: '', msgOk: false, busy: false, showDone: false, push: 'unknown' };
+  var S = { session: null, jobs: [], items: [], earn: [], loaded: false, authMode: 'in', msg: '', msgOk: false, busy: false, showDone: false, push: 'unknown' };
   var sheet = null;
   var app = document.getElementById('app');
   var sheetEl = document.getElementById('sheet');
@@ -48,6 +48,30 @@
     var end = endOfToday();
     return openTodos(jobId).filter(function (i) { return i.due_at && new Date(i.due_at) <= end; });
   }
+  function dstr(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function money(n) {
+    var v = Math.round(Number(n) * 100) / 100;
+    return '$' + v.toLocaleString('en-US', { minimumFractionDigits: Number.isInteger(v) ? 0 : 2, maximumFractionDigits: 2 });
+  }
+  function ranges() {
+    var n = new Date(), y = n.getFullYear(), m = n.getMonth(), d = n.getDate(), dow = (n.getDay() + 6) % 7;
+    return {
+      t: dstr(n), next: dstr(new Date(y, m, d + 1)),
+      m0: dstr(new Date(y, m, 1)), m1: dstr(new Date(y, m + 1, 0)),
+      w0: dstr(new Date(y, m, d - dow)), w1: dstr(new Date(y, m, d - dow + 6)),
+      f0: dstr(new Date(y, m, d - 13)), month: n.toLocaleDateString([], { month: 'long' })
+    };
+  }
+  function paySum(jobId, from, to) {
+    var t = 0;
+    S.earn.forEach(function (e) { if ((!jobId || e.job_id === jobId) && e.work_date >= from && e.work_date <= to) t += Number(e.amount); });
+    return t;
+  }
+  function dayLabel(ds) {
+    var p = ds.split('-');
+    return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  }
+  function hoursLabel(h) { h = Number(h); return h + (h === 1 ? ' hr' : ' hrs'); }
   function job(id) { return S.jobs.filter(function (j) { return j.id === id; })[0]; }
   function uid() { return S.session.user.id; }
   var ICON = {
@@ -64,11 +88,13 @@
   async function load() {
     var r = await Promise.all([
       sb.from('jobs').select('*').order('sort').order('created_at'),
-      sb.from('items').select('*').order('created_at')
+      sb.from('items').select('*').order('created_at'),
+      sb.from('earnings').select('*').order('work_date')
     ]);
-    if (r[0].error || r[1].error) { S.msg = 'Could not load your data. Check your connection and reopen the app.'; }
+    if (r[0].error || r[1].error || r[2].error) { S.msg = 'Could not load your data. Check your connection and reopen the app.'; }
     S.jobs = r[0].data || [];
     S.items = r[1].data || [];
+    S.earn = r[2].data || [];
     S.loaded = true;
     setBadge();
     render();
@@ -122,8 +148,42 @@
     return '<div class="page"><div class="head"><div class="eyebrow">' +
       esc(new Date().toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })) + '</div><h1>' + headline + '</h1></div>' +
       (S.msg ? '<div class="msg">' + esc(S.msg) + '</div>' : '') +
+      (n ? moneyCard() : '') +
       '<div class="stack">' + cards +
       '<button class="btn ghost" type="button" data-act="newjob">' + ICON.plus + 'Add a job</button></div></div>' + tabs('today');
+  }
+
+  function moneyCard() {
+    var R = ranges(), made = paySum(null, R.m0, R.t), coming = paySum(null, R.next, R.m1);
+    var rows = S.jobs.map(function (j) {
+      var a = paySum(j.id, R.m0, R.t);
+      return a ? '<div class="mrow"><div class="dot" style="background:' + color(j.color) + '"></div><div class="mname">' + esc(j.name) + '</div><div class="mamt">' + money(a) + '</div></div>' : '';
+    }).join('');
+    return '<div class="card moneycard"><div class="eyebrow">' + esc(R.month) + ' so far, before taxes</div>' +
+      '<div class="big">' + money(made) + '</div>' + rows +
+      (coming ? '<div class="small muted">' + money(coming) + ' more scheduled this month</div>' : '') +
+      (!made && !coming ? '<div class="small muted">Nothing logged yet. Open a job and log your hours or pay.</div>' : '') + '</div>';
+  }
+
+  function moneySection(j) {
+    var R = ranges(), hourly = j.pay_type === 'hourly' && j.hourly_rate;
+    var list = S.earn.filter(function (e) { return e.job_id === j.id; }).sort(function (a, b) { return a.work_date < b.work_date ? 1 : a.work_date > b.work_date ? -1 : 0; });
+    var coming = 0;
+    list.forEach(function (e) { if (e.work_date > R.t) coming += Number(e.amount); });
+    function stat(v, l) { return '<div class="stat"><div class="n">' + money(v) + '</div><div class="l">' + l + '</div></div>'; }
+    var rows = list.slice(0, S.showPay ? 60 : 6).map(function (e) {
+      var up = e.work_date > R.t;
+      return '<button type="button" class="earnrow" data-act="editearn" data-id="' + esc(e.id) + '">' +
+        '<span class="el"><span class="t">' + esc(dayLabel(e.work_date)) + (e.hours ? ', ' + esc(hoursLabel(e.hours)) : '') + '</span>' +
+        ((e.note || up) ? '<span class="b">' + (up ? 'Scheduled' + (e.note ? ', ' : '') : '') + esc(e.note || '') + '</span>' : '') + '</span>' +
+        '<span class="ea' + (up ? ' up' : '') + '">' + money(e.amount) + '</span></button>';
+    }).join('');
+    return '<div class="sec"><div class="eyebrow">Money, before taxes' + (hourly ? ' (' + money(j.hourly_rate) + ' an hour)' : '') + '</div>' +
+      '<div class="stats">' + stat(paySum(j.id, R.w0, R.t), 'This week') + stat(paySum(j.id, R.f0, R.t), 'Last 2 weeks') + stat(paySum(j.id, R.m0, R.t), esc(R.month)) + '</div>' +
+      (coming ? '<div class="small muted">' + money(coming) + ' more scheduled</div>' : '') +
+      (rows ? '<div class="list">' + rows + '</div>' : '') +
+      (list.length > 6 ? '<button type="button" class="linkbtn small" data-act="showpay">' + (S.showPay ? 'Show fewer' : 'Show all (' + list.length + ')') + '</button>' : '') +
+      '<button type="button" class="btn line" data-act="addearn" data-id="' + esc(j.id) + '">' + ICON.plus + (hourly ? 'Log hours' : 'Log pay') + '</button></div>';
   }
 
   function itemRow(i) {
@@ -161,6 +221,7 @@
         return '<button type="button" class="chip" data-act="quick" data-id="' + esc(j.id) + '" data-n="' + n + '">' + ICON.plus + esc(q.label) + '</button>';
       }).join('') + '</div></div>';
     }
+    html += moneySection(j);
     html += '<div class="sec"><div class="eyebrow">To do</div><div class="list">' +
       (open.length ? open.map(itemRow).join('') : '<div class="empty">Nothing open.</div>') + '</div>';
     if (done.length) {
@@ -211,6 +272,24 @@
       '<button class="btn block" type="submit">Save</button>' +
       (s.id ? '<button type="button" class="btn danger block" data-act="delitem">' + (s.confirm ? 'Tap again to delete' : 'Delete') + '</button>' : '') + '</form>';
   }
+  function sheetEarn() {
+    var s = sheet;
+    return '<form class="sheet" data-form="earn"><div class="bar"><h2>' + (s.id ? 'Edit entry' : s.hourly ? 'Log hours' : 'Log pay') + '</h2>' +
+      '<button type="button" class="iconbtn" data-act="closesheet" aria-label="Close">' + ICON.x + '</button></div>' +
+      '<div class="field"><label for="ed">Date (pick a future date for a scheduled session)</label><input id="ed" name="date" type="date" required value="' + esc(s.date) + '"></div>' +
+      (s.hourly
+        ? '<div class="field"><label for="eh">Hours</label><input id="eh" name="hours" type="number" inputmode="decimal" min="0.25" max="24" step="0.25" required value="' + esc(s.hours) + '"></div>' +
+          '<div class="calc" id="calc">' + calcText(s.hours, s.rate) + '</div>'
+        : '<div class="field"><label for="ea">Amount in dollars</label><input id="ea" name="amount" type="number" inputmode="decimal" min="0" step="0.01" required value="' + esc(s.amount) + '"></div>') +
+      '<div class="field"><label for="en">Note (optional)</label><input id="en" name="note" type="text" maxlength="200" value="' + esc(s.note) + '"></div>' +
+      '<div class="msg" role="status">' + esc(s.msg || '') + '</div>' +
+      '<button class="btn block" type="submit">Save</button>' +
+      (s.id ? '<button type="button" class="btn danger block" data-act="delearn">' + (s.confirm ? 'Tap again to delete' : 'Delete') + '</button>' : '') + '</form>';
+  }
+  function calcText(hours, rate) {
+    var h = parseFloat(hours);
+    return h > 0 ? esc(hoursLabel(h)) + ' at ' + money(rate) + ' = ' + money(h * rate) : 'Enter hours to see the pay.';
+  }
   function sheetJob() {
     var s = sheet;
     return '<form class="sheet" data-form="job"><div class="bar"><h2>' + (s.id ? 'Edit job' : 'New job') + '</h2>' +
@@ -220,6 +299,8 @@
       '<div class="field"><label>Color</label><div class="swatches">' + COLORS.map(function (c, n) {
         return '<button type="button" class="swatch' + (c === s.color ? ' on' : '') + '" style="background:' + c + '" data-act="swatch" data-c="' + c + '" aria-label="Color ' + (n + 1) + '"' + (c === s.color ? ' aria-pressed="true"' : '') + '></button>';
       }).join('') + '</div></div>' +
+      '<div class="field"><label>How this job pays</label><div class="seg"><button type="button" data-act="paytype" data-kind="hourly" class="' + (s.pay_type === 'hourly' ? 'on' : '') + '">By the hour</button><button type="button" data-act="paytype" data-kind="variable" class="' + (s.pay_type === 'hourly' ? '' : 'on') + '">It varies</button></div></div>' +
+      (s.pay_type === 'hourly' ? '<div class="field"><label for="jp">Dollars per hour</label><input id="jp" name="rate" type="number" inputmode="decimal" min="0.01" step="0.01" value="' + esc(s.rate) + '"></div>' : '') +
       '<div class="field"><label>Shortcuts to other apps</label>' + s.shortcuts.map(function (r, n) {
         return '<div class="srow"><input class="lab" name="sl' + n + '" type="text" maxlength="30" placeholder="Name" aria-label="Shortcut name" value="' + esc(r.label) + '">' +
           '<input name="su' + n + '" type="url" inputmode="url" autocapitalize="none" placeholder="https://" aria-label="Shortcut link" value="' + esc(r.url) + '">' +
@@ -235,14 +316,19 @@
     if (sheet.type === 'item') {
       sheet.title = f.title.value; sheet.body = f.body.value;
       if (f.due) sheet.due = f.due.value;
+    } else if (sheet.type === 'earn') {
+      sheet.date = f.date.value; sheet.note = f.note.value;
+      if (f.hours) sheet.hours = f.hours.value;
+      if (f.amount) sheet.amount = f.amount.value;
     } else {
       sheet.name = f.name.value; sheet.role_note = f.role_note.value;
+      if (f.rate) sheet.rate = f.rate.value;
       sheet.shortcuts = sheet.shortcuts.map(function (r, n) { return { label: f['sl' + n].value, url: f['su' + n].value }; });
     }
   }
   function renderSheet(focus) {
-    sheetEl.innerHTML = !sheet ? '' : sheet.type === 'item' ? sheetItem() : sheetJob();
-    if (focus) { var el = sheetEl.querySelector('input[type=text]'); if (el) el.focus(); }
+    sheetEl.innerHTML = !sheet ? '' : sheet.type === 'item' ? sheetItem() : sheet.type === 'earn' ? sheetEarn() : sheetJob();
+    if (focus) { var el = sheetEl.querySelector(sheet && sheet.type === 'earn' ? 'input[type=number]' : 'input[type=text]'); if (el) el.focus(); }
   }
   function closeSheet() { sheet = null; renderSheet(); }
 
@@ -254,7 +340,7 @@
     var m = h.match(/^#\/job\/([0-9a-f-]+)$/i);
     app.innerHTML = m ? viewJob(m[1]) : h === '#/me' ? viewMe() : viewToday();
   }
-  window.addEventListener('hashchange', function () { S.msg = ''; S.showDone = false; closeSheet(); render(); window.scrollTo(0, 0); });
+  window.addEventListener('hashchange', function () { S.msg = ''; S.showDone = false; S.showPay = false; closeSheet(); render(); window.scrollTo(0, 0); });
 
   // ---------- push ----------
   function b64ToBytes(b64) {
@@ -324,6 +410,31 @@
     if (r.error) { sheet.msg = 'Could not save. Try again.'; return renderSheet(); }
     closeSheet(); setBadge(); render();
   }
+  async function saveEarn() {
+    collect();
+    var s = sheet, row = { work_date: s.date, note: s.note.trim() || null };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s.date)) { sheet.msg = 'Pick a date.'; return renderSheet(); }
+    if (s.hourly) {
+      var h = parseFloat(s.hours);
+      if (!(h > 0 && h <= 24)) { sheet.msg = 'Enter hours between 0.25 and 24.'; return renderSheet(); }
+      row.hours = h; row.amount = Math.round(h * s.rate * 100) / 100;
+    } else {
+      var a = Math.round(parseFloat(s.amount) * 100) / 100;
+      if (!(a >= 0)) { sheet.msg = 'Enter an amount.'; return renderSheet(); }
+      row.hours = null; row.amount = a;
+    }
+    var r;
+    if (s.id) {
+      r = await sb.from('earnings').update(row).eq('id', s.id).select().single();
+      if (!r.error) S.earn = S.earn.map(function (e) { return e.id === s.id ? r.data : e; });
+    } else {
+      row.user_id = uid(); row.job_id = s.job_id;
+      r = await sb.from('earnings').insert(row).select().single();
+      if (!r.error) S.earn.push(r.data);
+    }
+    if (r.error) { sheet.msg = 'Could not save. Try again.'; return renderSheet(); }
+    closeSheet(); render();
+  }
   async function saveJob() {
     collect();
     var s = sheet, name = s.name.trim();
@@ -335,7 +446,12 @@
       if (!lab || !SAFE_URL.test(url)) { sheet.msg = 'Each shortcut needs a name and a link that starts with https://'; return renderSheet(); }
       shortcuts.push({ label: lab, url: url });
     }
-    var row = { name: name, role_note: s.role_note.trim() || null, color: color(s.color), shortcuts: shortcuts };
+    var rate = null;
+    if (s.pay_type === 'hourly') {
+      rate = Math.round(parseFloat(s.rate) * 100) / 100;
+      if (!(rate > 0)) { sheet.msg = 'Enter the dollars per hour, or switch to It varies.'; return renderSheet(); }
+    }
+    var row = { name: name, role_note: s.role_note.trim() || null, color: color(s.color), shortcuts: shortcuts, pay_type: s.pay_type === 'hourly' ? 'hourly' : 'variable', hourly_rate: rate };
     var r;
     if (s.id) {
       r = await sb.from('jobs').update(row).eq('id', s.id).select().single();
@@ -364,11 +480,18 @@
     S.busy = false; render();
   }
 
+  document.addEventListener('input', function (e) {
+    if (sheet && sheet.type === 'earn' && e.target.name === 'hours') {
+      var c = document.getElementById('calc');
+      if (c) c.innerHTML = calcText(e.target.value, sheet.rate);
+    }
+  });
+
   document.addEventListener('submit', function (e) {
     var f = e.target, kind = f.getAttribute('data-form');
     if (!kind) return;
     e.preventDefault();
-    if (kind === 'auth') auth(f); else if (kind === 'item') saveItem(f); else if (kind === 'job') saveJob();
+    if (kind === 'auth') auth(f); else if (kind === 'item') saveItem(f); else if (kind === 'earn') saveEarn(); else if (kind === 'job') saveJob();
   });
 
   document.addEventListener('click', async function (e) {
@@ -378,8 +501,8 @@
     var act = t.getAttribute('data-act'), id = t.getAttribute('data-id');
     if (act === 'authmode') { S.authMode = S.authMode === 'up' ? 'in' : 'up'; S.msg = ''; render(); }
     else if (act === 'closesheet') closeSheet();
-    else if (act === 'newjob') { sheet = { type: 'job', name: '', role_note: '', color: COLORS[S.jobs.length % COLORS.length], shortcuts: [] }; renderSheet(true); }
-    else if (act === 'editjob') { var j = job(id); sheet = { type: 'job', id: id, name: j.name, role_note: j.role_note || '', color: color(j.color), shortcuts: (j.shortcuts || []).map(function (s) { return { label: s.label || '', url: s.url || '' }; }) }; renderSheet(); }
+    else if (act === 'newjob') { sheet = { type: 'job', name: '', role_note: '', color: COLORS[S.jobs.length % COLORS.length], shortcuts: [], pay_type: 'variable', rate: '' }; renderSheet(true); }
+    else if (act === 'editjob') { var j = job(id); sheet = { type: 'job', id: id, name: j.name, role_note: j.role_note || '', color: color(j.color), pay_type: j.pay_type === 'hourly' ? 'hourly' : 'variable', rate: j.hourly_rate == null ? '' : String(j.hourly_rate), shortcuts: (j.shortcuts || []).map(function (s) { return { label: s.label || '', url: s.url || '' }; }) }; renderSheet(); }
     else if (act === 'swatch') { collect(); sheet.color = t.getAttribute('data-c'); renderSheet(); }
     else if (act === 'addshort') { collect(); sheet.shortcuts.push({ label: '', url: '' }); renderSheet(); }
     else if (act === 'delshort') { collect(); sheet.shortcuts.splice(+t.getAttribute('data-n'), 1); renderSheet(); }
@@ -398,6 +521,25 @@
       if (r.error) { item.done = !item.done; setBadge(); render(); }
     }
     else if (act === 'showdone') { S.showDone = !S.showDone; render(); }
+    else if (act === 'showpay') { S.showPay = !S.showPay; render(); }
+    else if (act === 'paytype') { collect(); sheet.pay_type = t.getAttribute('data-kind'); renderSheet(); }
+    else if (act === 'addearn') {
+      var pj = job(id), ph = pj.pay_type === 'hourly' && pj.hourly_rate;
+      sheet = { type: 'earn', job_id: id, hourly: !!ph, rate: ph ? Number(pj.hourly_rate) : 0, date: dstr(new Date()), hours: '', amount: '', note: '' }; renderSheet(true);
+    }
+    else if (act === 'editearn') {
+      var en = S.earn.filter(function (e) { return e.id === id; })[0], ej = job(en.job_id);
+      var eh = en.hours != null;
+      sheet = { type: 'earn', id: id, job_id: en.job_id, hourly: eh, rate: eh ? Number(en.amount) / Number(en.hours) : 0, date: en.work_date, hours: eh ? String(Number(en.hours)) : '', amount: String(Number(en.amount)), note: en.note || '' };
+      if (eh && ej && ej.pay_type === 'hourly' && ej.hourly_rate) sheet.rate = Number(ej.hourly_rate);
+      renderSheet();
+    }
+    else if (act === 'delearn') {
+      if (!sheet.confirm) { collect(); sheet.confirm = true; return renderSheet(); }
+      var de = await sb.from('earnings').delete().eq('id', sheet.id);
+      if (de.error) { sheet.msg = 'Could not delete. Try again.'; return renderSheet(); }
+      S.earn = S.earn.filter(function (e) { return e.id !== sheet.id; }); closeSheet(); render();
+    }
     else if (act === 'delitem') {
       if (!sheet.confirm) { collect(); sheet.confirm = true; return renderSheet(); }
       var d = await sb.from('items').delete().eq('id', sheet.id);
@@ -410,6 +552,7 @@
       if (dj.error) { sheet.msg = 'Could not delete. Try again.'; return renderSheet(); }
       S.jobs = S.jobs.filter(function (x) { return x.id !== gone; });
       S.items = S.items.filter(function (i) { return i.job_id !== gone; });
+      S.earn = S.earn.filter(function (e) { return e.job_id !== gone; });
       closeSheet(); setBadge(); location.hash = '#/';
     }
     else if (act === 'pushon') pushOn();
@@ -424,7 +567,7 @@
     var was = S.session && S.session.user.id, now = session && session.user.id;
     S.session = session;
     if (was === now && S.loaded) return;
-    S.loaded = false; S.jobs = []; S.items = []; S.msg = '';
+    S.loaded = false; S.jobs = []; S.items = []; S.earn = []; S.msg = '';
     render();
     if (session) setTimeout(function () { pushState().then(load); }, 0);
   });
