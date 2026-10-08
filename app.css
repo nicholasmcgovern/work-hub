@@ -111,3 +111,17 @@ h1 { margin: 0; font-size: 30px; line-height: 36px; font-weight: 700; letter-spa
 .earnrow .ea { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .earnrow .ea.up { color: var(--muted); font-weight: 600; }
 .calc { font-size: 15px; font-weight: 600; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+
+.dcline { font-size: 13px; color: var(--muted); }
+.dcline.hot { color: #1F5FD1; font-weight: 700; }
+.dlist { padding: 0; }
+.dmsg { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.dmsg:last-child { border-bottom: 0; }
+.dmsg.me { background: #EAF0FC; box-shadow: inset 4px 0 0 #1F5FD1; }
+.dhead { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.dauth { font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.dtime { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.dtext { font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dnew { font-size: 11px; font-weight: 700; color: #fff; background: #1F5FD1; border-radius: 8px; padding: 1px 6px; }
+.dwarn { font-size: 14px; background: #FFF4E5; border: 1px solid #F0C78A; color: #6B3E00; border-radius: 12px; padding: 10px 12px; }
+.rowbtns a.btn { flex: 1; }

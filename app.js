@@ -6,7 +6,7 @@
   var COLORS = ['#1F5FD1', '#B4530A', '#0B6B62', '#6D3FC4', '#B3261E', '#3E4756'];
   var SAFE_URL = /^(https?:|sms:|tel:|mailto:|message:)/i;
 
-  var S = { session: null, jobs: [], items: [], earn: [], loaded: false, authMode: 'in', msg: '', msgOk: false, busy: false, showDone: false, push: 'unknown' };
+  var S = { session: null, jobs: [], items: [], earn: [], dc: [], dm: [], dcCh: {}, prevSeen: {}, marked: '', loaded: false, authMode: 'in', msg: '', msgOk: false, busy: false, showDone: false, push: 'unknown' };
   var sheet = null;
   var app = document.getElementById('app');
   var sheetEl = document.getElementById('sheet');
@@ -72,6 +72,30 @@
     return new Date(+p[0], +p[1] - 1, +p[2]).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
   }
   function hoursLabel(h) { h = Number(h); return h + (h === 1 ? ' hr' : ' hrs'); }
+  function dcFor(jobId) { return S.dc.filter(function (c) { return c.job_id === jobId; })[0]; }
+  function dcUnseen(jobId) {
+    var c = dcFor(jobId), out = { n: 0, m: 0 };
+    if (!c) return out;
+    var since = new Date(c.viewed_at).getTime();
+    S.dm.forEach(function (x) { if (x.job_id === jobId && new Date(x.sent_at).getTime() > since) { out.n++; if (x.mentions_me) out.m++; } });
+    return out;
+  }
+  function ago(iso) {
+    var d = new Date(iso), mins = Math.round((Date.now() - d.getTime()) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    if (mins < 60 * 24) return Math.round(mins / 60) + 'h ago';
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  function markViewed(jobId) {
+    var c = dcFor(jobId);
+    if (!c || S.marked === location.hash) return;
+    S.marked = location.hash;
+    if (!S.prevSeen[c.id]) S.prevSeen[c.id] = c.viewed_at;
+    c.viewed_at = new Date().toISOString();
+    sb.from('discord_config').update({ viewed_at: c.viewed_at }).eq('id', c.id).then(function () {}, function () {});
+    setBadge();
+  }
   function job(id) { return S.jobs.filter(function (j) { return j.id === id; })[0]; }
   function uid() { return S.session.user.id; }
   var ICON = {
@@ -89,12 +113,16 @@
     var r = await Promise.all([
       sb.from('jobs').select('*').order('sort').order('created_at'),
       sb.from('items').select('*').order('created_at'),
-      sb.from('earnings').select('*').order('work_date')
+      sb.from('earnings').select('*').order('work_date'),
+      sb.from('discord_config').select('*'),
+      sb.from('discord_messages').select('*').order('sent_at', { ascending: false }).limit(400)
     ]);
     if (r[0].error || r[1].error || r[2].error) { S.msg = 'Could not load your data. Check your connection and reopen the app.'; }
     S.jobs = r[0].data || [];
     S.items = r[1].data || [];
     S.earn = r[2].data || [];
+    S.dc = r[3].data || [];
+    S.dm = r[4].data || [];
     S.loaded = true;
     setBadge();
     render();
@@ -102,7 +130,7 @@
   function setBadge() {
     if (!navigator.setAppBadge) return;
     var n = 0;
-    S.jobs.forEach(function (j) { n += needsYou(j.id).length; });
+    S.jobs.forEach(function (j) { n += needsYou(j.id).length + dcUnseen(j.id).m; });
     (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(function () {});
   }
 
@@ -129,7 +157,7 @@
   function viewToday() {
     var total = 0;
     var cards = S.jobs.map(function (j) {
-      var need = needsYou(j.id).length, open = openTodos(j.id);
+      var dcu = dcUnseen(j.id), need = needsYou(j.id).length + dcu.m, open = openTodos(j.id);
       total += need;
       var peek = open.slice(0, 2).map(function (i) {
         var d = dueLabel(i.due_at);
@@ -140,7 +168,8 @@
         '<div class="row1"><div class="dot" style="background:' + color(j.color) + '"></div>' +
         '<div class="jobname">' + esc(j.name) + '</div>' +
         '<div class="count' + (need ? '' : ' zero') + '"' + (need ? ' style="background:' + color(j.color) + '"' : '') + '>' + need + '</div></div>' +
-        '<div class="peek">' + (peek ? peek + more : '<div class="due">Nothing open.</div>') + '</div></a>';
+        '<div class="peek">' + (peek ? peek + more : '<div class="due">Nothing open.</div>') + '</div>' +
+        (dcu.n ? '<div class="dcline' + (dcu.m ? ' hot' : '') + '">Discord: ' + dcu.n + ' new' + (dcu.m ? ', ' + dcu.m + (dcu.m === 1 ? ' mentions you' : ' mention you') : '') + '</div>' : '') + '</a>';
     }).join('');
     var n = S.jobs.length;
     var headline = !n ? 'Add your first job' :
@@ -151,6 +180,50 @@
       (n ? moneyCard() : '') +
       '<div class="stack">' + cards +
       '<button class="btn ghost" type="button" data-act="newjob">' + ICON.plus + 'Add a job</button></div></div>' + tabs('today');
+  }
+
+  function dcMsgRow(x, since) {
+    var isNew = since && new Date(x.sent_at) > new Date(since);
+    return '<div class="dmsg' + (x.mentions_me ? ' me' : '') + '">' +
+      '<div class="dhead"><span class="dauth">' + esc(x.author) + '</span><span class="dtime">' + esc(ago(x.sent_at)) + (isNew ? ' <span class="dnew">New</span>' : '') + '</span></div>' +
+      (x.content ? '<div class="dtext">' + esc(x.content) + '</div>' : '') +
+      (x.attachments ? '<div class="dtime">' + x.attachments + (x.attachments === 1 ? ' attachment' : ' attachments') + ', open in Discord to see</div>' : '') + '</div>';
+  }
+  function dcChannelPicker(c) {
+    var chans = c.channels || [], cur = S.dcCh[c.id] || (chans[0] && chans[0].id);
+    S.dcCh[c.id] = cur;
+    return { cur: cur, html: chans.length > 1 ? '<div class="seg">' + chans.map(function (ch) {
+      return '<button type="button" data-act="dcch" data-id="' + esc(c.id) + '" data-ch="' + esc(ch.id) + '" class="' + (ch.id === cur ? 'on' : '') + '">#' + esc(ch.name) + '</button>';
+    }).join('') + '</div>' : '' };
+  }
+  function dcStatus(c) {
+    var blocked = (c.channels || []).filter(function (ch) { return (c.status || {})[ch.id] === 'no_access'; });
+    if (blocked.length) return '<div class="dwarn">The bot can\'t see ' + blocked.map(function (ch) { return '#' + esc(ch.name); }).join(' and ') + ' yet. Ask the server admin to add Work Hub to ' + (blocked.length === 1 ? 'that channel' : 'those channels') + ' with View Channel and Read Message History.</div>';
+    return c.synced_at ? '<div class="small muted">Checked ' + esc(ago(c.synced_at)) + '</div>' : '<div class="small muted">Waiting for the first check.</div>';
+  }
+  function discordSection(j) {
+    var c = dcFor(j.id);
+    if (!c) return '';
+    var pick = dcChannelPicker(c), since = S.prevSeen[c.id];
+    var msgs = S.dm.filter(function (x) { return x.config_id === c.id && x.channel_id === pick.cur; }).slice(0, 4);
+    var mentions = S.dm.filter(function (x) { return x.config_id === c.id && x.mentions_me; }).slice(0, 3);
+    return '<div class="sec"><div class="eyebrow">Discord</div>' + dcStatus(c) +
+      (mentions.length ? '<div class="small muted">Mentions of you</div><div class="list dlist">' + mentions.map(function (x) { return dcMsgRow(x, since); }).join('') + '</div>' : '') +
+      pick.html +
+      '<div class="list dlist">' + (msgs.length ? msgs.map(function (x) { return dcMsgRow(x, since); }).join('') : '<div class="empty">No messages to show yet.</div>') + '</div>' +
+      '<div class="rowbtns"><a class="btn line" href="#/discord/' + esc(j.id) + '">Full feed</a>' +
+      '<a class="btn line" href="https://discord.com/channels/' + esc(c.guild_id) + '/' + esc(pick.cur) + '" target="_blank" rel="noopener">Open Discord</a></div></div>';
+  }
+  function viewFeed(jobId) {
+    var j = job(jobId), c = dcFor(jobId);
+    if (!j || !c) return '<div class="page"><h1>Not found</h1><a class="btn line" href="#/">Back to Today</a></div>';
+    var pick = dcChannelPicker(c), since = S.prevSeen[c.id];
+    var msgs = S.dm.filter(function (x) { return x.config_id === c.id && x.channel_id === pick.cur; }).slice(0, 150);
+    return '<div class="jobhead" style="background:' + color(j.color) + '"><div class="bar"><a href="#/job/' + esc(j.id) + '">' + ICON.back + esc(j.name) + '</a>' +
+      '<button type="button" data-act="dcrefresh">Refresh</button></div><h1>Discord</h1></div>' +
+      '<div class="jobbody">' + dcStatus(c) + pick.html +
+      '<div class="list dlist">' + (msgs.length ? msgs.map(function (x) { return dcMsgRow(x, since); }).join('') : '<div class="empty">No messages to show yet.</div>') + '</div>' +
+      '<a class="btn line" href="https://discord.com/channels/' + esc(c.guild_id) + '/' + esc(pick.cur) + '" target="_blank" rel="noopener">Open this channel in Discord</a></div>';
   }
 
   function moneyCard() {
@@ -221,6 +294,7 @@
         return '<button type="button" class="chip" data-act="quick" data-id="' + esc(j.id) + '" data-n="' + n + '">' + ICON.plus + esc(q.label) + '</button>';
       }).join('') + '</div></div>';
     }
+    html += discordSection(j);
     html += moneySection(j);
     html += '<div class="sec"><div class="eyebrow">To do</div><div class="list">' +
       (open.length ? open.map(itemRow).join('') : '<div class="empty">Nothing open.</div>') + '</div>';
@@ -337,8 +411,9 @@
     var h = location.hash || '#/';
     if (!S.session) { app.innerHTML = viewAuth(); return; }
     if (!S.loaded) { app.innerHTML = '<div class="page"><div class="muted">Loading</div></div>'; return; }
-    var m = h.match(/^#\/job\/([0-9a-f-]+)$/i);
-    app.innerHTML = m ? viewJob(m[1]) : h === '#/me' ? viewMe() : viewToday();
+    var m = h.match(/^#\/job\/([0-9a-f-]+)$/i), f = h.match(/^#\/discord\/([0-9a-f-]+)$/i);
+    if (m || f) markViewed((m || f)[1]);
+    app.innerHTML = m ? viewJob(m[1]) : f ? viewFeed(f[1]) : h === '#/me' ? viewMe() : viewToday();
   }
   window.addEventListener('hashchange', function () { S.msg = ''; S.showDone = false; S.showPay = false; closeSheet(); render(); window.scrollTo(0, 0); });
 
@@ -522,6 +597,15 @@
     }
     else if (act === 'showdone') { S.showDone = !S.showDone; render(); }
     else if (act === 'showpay') { S.showPay = !S.showPay; render(); }
+    else if (act === 'dcch') { S.dcCh[id] = t.getAttribute('data-ch'); render(); }
+    else if (act === 'dcrefresh') {
+      t.textContent = 'Checking';
+      await sb.functions.invoke('discord', { body: {} });
+      var rr = await Promise.all([sb.from('discord_config').select('*'), sb.from('discord_messages').select('*').order('sent_at', { ascending: false }).limit(400)]);
+      if (!rr[0].error) S.dc = rr[0].data || [];
+      if (!rr[1].error) S.dm = rr[1].data || [];
+      S.marked = ''; render();
+    }
     else if (act === 'paytype') { collect(); sheet.pay_type = t.getAttribute('data-kind'); renderSheet(); }
     else if (act === 'addearn') {
       var pj = job(id), ph = pj.pay_type === 'hourly' && pj.hourly_rate;
@@ -567,7 +651,7 @@
     var was = S.session && S.session.user.id, now = session && session.user.id;
     S.session = session;
     if (was === now && S.loaded) return;
-    S.loaded = false; S.jobs = []; S.items = []; S.earn = []; S.msg = '';
+    S.loaded = false; S.jobs = []; S.items = []; S.earn = []; S.dc = []; S.dm = []; S.prevSeen = {}; S.marked = ''; S.msg = '';
     render();
     if (session) setTimeout(function () { pushState().then(load); }, 0);
   });
